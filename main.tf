@@ -10,103 +10,62 @@
   relationships, serving as the central blueprint of your infrastructure.
 */
 
-# ---------------------------------------------------------------------------------------------------------------------
-# VPC CONFIGURATION
-# Creates a Virtual Private Cloud to isolate our resources in AWS
-# ---------------------------------------------------------------------------------------------------------------------
+provider "aws" {
+  region = var.aws_region
+}
+
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+locals {
+  default_tags = {
+    Environment = "demo"
+    Terraform   = "true"
+  }
+}
 
 resource "aws_vpc" "main" {
-  cidr_block           = "10.0.0.0/16"
+  cidr_block           = var.vpc_cidr
   enable_dns_support   = true
   enable_dns_hostnames = true
 
-  tags = {
-    Name        = "main-vpc"
-    Environment = "demo"
-    Terraform   = "true"
-  }
+  tags = merge(local.default_tags, {
+    Name = "main-vpc"
+  })
 }
 
-# ---------------------------------------------------------------------------------------------------------------------
-# SUBNET CONFIGURATION
-# Creates public and private subnets across two availability zones for high availability
-# ---------------------------------------------------------------------------------------------------------------------
-
-# Public subnet in the first availability zone
-resource "aws_subnet" "public_1" {
+resource "aws_subnet" "public" {
+  count                   = 2
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.1.0/24"
-  availability_zone       = "${var.aws_region}a"
+  cidr_block              = var.public_subnet_cidrs[count.index]
+  availability_zone       = data.aws_availability_zones.available.names[count.index]
   map_public_ip_on_launch = true
 
-  tags = {
-    Name        = "public-subnet-1"
-    Environment = "demo"
-    Terraform   = "true"
-  }
+  tags = merge(local.default_tags, {
+    Name = "public-subnet-${count.index + 1}"
+  })
 }
 
-# Public subnet in the second availability zone
-resource "aws_subnet" "public_2" {
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.2.0/24"
-  availability_zone       = "${var.aws_region}b"
-  map_public_ip_on_launch = true
-
-  tags = {
-    Name        = "public-subnet-2"
-    Environment = "demo"
-    Terraform   = "true"
-  }
-}
-
-# Private subnet in the first availability zone
-resource "aws_subnet" "private_1" {
+resource "aws_subnet" "private" {
+  count             = 2
   vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.3.0/24"
-  availability_zone = "${var.aws_region}a"
+  cidr_block        = var.private_subnet_cidrs[count.index]
+  availability_zone = data.aws_availability_zones.available.names[count.index]
 
-  tags = {
-    Name        = "private-subnet-1"
-    Environment = "demo"
-    Terraform   = "true"
-  }
+  tags = merge(local.default_tags, {
+    Name = "private-subnet-${count.index + 1}"
+  })
 }
-
-# Private subnet in the second availability zone
-resource "aws_subnet" "private_2" {
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.4.0/24"
-  availability_zone = "${var.aws_region}b"
-
-  tags = {
-    Name        = "private-subnet-2"
-    Environment = "demo"
-    Terraform   = "true"
-  }
-}
-
-# ---------------------------------------------------------------------------------------------------------------------
-# INTERNET GATEWAY
-# Allows communication between VPC instances and the internet
-# ---------------------------------------------------------------------------------------------------------------------
 
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
 
-  tags = {
-    Name        = "main-igw"
-    Environment = "demo"
-    Terraform   = "true"
-  }
+  tags = merge(local.default_tags, {
+    Name = "main-igw"
+  })
 }
 
-# ---------------------------------------------------------------------------------------------------------------------
-# ROUTE TABLES AND ASSOCIATIONS
-# Defines how traffic is directed within the VPC
-# ---------------------------------------------------------------------------------------------------------------------
-
-# Public route table - allows traffic to/from internet
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
 
@@ -115,28 +74,16 @@ resource "aws_route_table" "public" {
     gateway_id = aws_internet_gateway.main.id
   }
 
-  tags = {
-    Name        = "public-route-table"
-    Environment = "demo"
-    Terraform   = "true"
-  }
+  tags = merge(local.default_tags, {
+    Name = "public-route-table"
+  })
 }
 
-# Associate public subnets with the public route table
-resource "aws_route_table_association" "public_1" {
-  subnet_id      = aws_subnet.public_1.id
+resource "aws_route_table_association" "public" {
+  count          = 2
+  subnet_id      = aws_subnet.public[count.index].id
   route_table_id = aws_route_table.public.id
 }
-
-resource "aws_route_table_association" "public_2" {
-  subnet_id      = aws_subnet.public_2.id
-  route_table_id = aws_route_table.public.id
-}
-
-# ---------------------------------------------------------------------------------------------------------------------
-# SECURITY GROUP
-# Acts as a virtual firewall for the EC2 instance
-# ---------------------------------------------------------------------------------------------------------------------
 
 resource "aws_security_group" "ec2_sg" {
   name        = "ec2-security-group"
@@ -160,27 +107,17 @@ resource "aws_security_group" "ec2_sg" {
   }
 
   egress {
-    description = "Allow all outbound traffic"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
-    Name        = "ec2-security-group"
-    Environment = "demo"
-    Terraform   = "true"
-  }
+  tags = merge(local.default_tags, {
+    Name = "ec2-security-group"
+  })
 }
 
-# ---------------------------------------------------------------------------------------------------------------------
-# EC2 INSTANCE
-# Deploys a virtual server running in the public subnet
-# References the input variables aws_region and instance_type to customize the deployment
-# ---------------------------------------------------------------------------------------------------------------------
-
-# Look up the latest Amazon Linux 2 AMI
 data "aws_ami" "amazon_linux" {
   most_recent = true
   owners      = ["amazon"]
@@ -196,13 +133,12 @@ data "aws_ami" "amazon_linux" {
   }
 }
 
-# EC2 instance definition
 resource "aws_instance" "web_server" {
   ami                    = data.aws_ami.amazon_linux.id
-  instance_type          = var.instance_type  # Uses the instance_type variable
-  subnet_id              = aws_subnet.public_1.id
+  instance_type          = var.instance_type
+  subnet_id              = aws_subnet.public[0].id
   vpc_security_group_ids = [aws_security_group.ec2_sg.id]
-  key_name               = "sree-terraform"  # Note: you need to create this key pair in AWS first
+  key_name               = var.key_name
 
   user_data = <<-EOF
               #!/bin/bash
@@ -213,14 +149,9 @@ resource "aws_instance" "web_server" {
               echo "<h1>Hello from Nginx in ${var.aws_region}!</h1>" > /usr/share/nginx/html/index.html
               EOF
 
-  tags = {
-    Name        = "web-server"
-    Environment = "demo"
-    Terraform   = "true"
-  }
+  tags = merge(local.default_tags, {
+    Name = "web-server"
+  })
 
-  # This resource explicitly depends on the Internet Gateway
-  # to ensure it has internet connectivity when it's created
   depends_on = [aws_internet_gateway.main]
 }
-
